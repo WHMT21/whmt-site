@@ -28,6 +28,7 @@
   .panel.on{display:block}
   [hidden]{display:none !important}
   #c-color{width:auto;max-width:100%;max-height:calc(100vh - 50px);margin:0 auto}
+  #c-maze{width:auto;max-width:100%;max-height:max(300px,calc(100vh - 190px));max-height:max(300px,calc(100dvh - 190px));margin:0 auto}
   .work{display:flex;gap:16px;align-items:flex-start;flex-wrap:wrap;justify-content:center}
   .stage{background:var(--card);border-radius:22px;box-shadow:0 4px 18px rgba(80,60,30,.10);padding:12px;flex:1 1 520px;max-width:700px;min-width:0}
   canvas{display:block;width:100%;height:auto;touch-action:none;border-radius:12px}
@@ -75,6 +76,7 @@
 <nav>
   <button data-tab="color" class="on">🖍️ Coloring Pages<span class="badge" id="b-color">⭐</span></button>
   <button data-tab="trace">✏️ Trace Letters<span class="badge" id="b-trace">⭐</span></button>
+  <button data-tab="maze">🏁 Mazes<span class="badge" id="b-maze">⭐</span></button>
 </nav>
 <main>
   <section class="panel on" id="p-color">
@@ -117,6 +119,18 @@
           <button class="btn" id="terase">Erase tracing</button>
         </div>
         <div class="msg" id="tmsg">Trace the gray letters with your finger.</div>
+      </div>
+    </div>
+  </section>
+  <section class="panel" id="p-maze">
+    <div class="work">
+      <div class="stage"><canvas id="c-maze" width="1000" height="1000"></canvas></div>
+      <div class="tools">
+        <h3>Pick a level</h3>
+        <div class="row" id="levels"></div>
+        <div class="row"><button class="btn big" id="mnew">New maze</button></div>
+        <div class="row"><button class="btn" id="mreset">↩ Start over</button></div>
+        <div class="msg" id="mmsg">Help Matty find the star! Drag him with your finger.</div>
       </div>
     </div>
   </section>
@@ -347,8 +361,158 @@ document.querySelectorAll('nav button').forEach(btn=>btn.addEventListener('click
   if(document.fonts&&document.fonts.load){ document.fonts.load('900 100px Nunito').then(start,start); } else start();
 })();
 
+/* ---------- Mazes ---------- */
+(function(){
+  const LEVELS=[{id:'easy',name:'Easy',n:6,forks:3},{id:'medium',name:'Medium',n:9,forks:5},{id:'hard',name:'Hard',n:12,forks:7}];
+  const N_=1,E_=2,S_=4,W_=8, DIRS=[[0,-1,N_,S_],[1,0,E_,W_],[0,1,S_,N_],[-1,0,W_,E_]];
+  const cv=document.getElementById('c-maze'), ctx=cv.getContext('2d'), SZ=cv.width, PAD=24;
+  const msg=document.getElementById('mmsg'), lvEl=document.getElementById('levels');
+  let lv=LEVELS[0], n=6, cs=0, walls=null, path=[], seed=0, won=false, dragging=false;
+  let done={}; try{ done=JSON.parse(store.get('mr_maze_done')||'{}'); }catch(e){ done={}; }
+  const face={brave:null,laugh:null};
+  loadImg('img/matty-brave.png').then(i=>{face.brave=i;draw();},()=>{});
+  loadImg('img/matty-laugh.png').then(i=>{face.laugh=i;draw();},()=>{});
+
+  function rng(a){ return function(){ a|=0; a=a+0x6D2B79F5|0; let t=Math.imul(a^a>>>15,1|a); t=t+Math.imul(t^t>>>7,61|t)^t; return ((t^t>>>14)>>>0)/4294967296; }; }
+  // "Growing tree" maze: half the time it keeps winding from the newest square, half the time it
+  // branches off an older one, so the route passes real forks. One way to the star. If the route
+  // has fewer forks than the level asks for, it carves another (same seed, so a reload rebuilds it).
+  function carve(r){
+    walls=new Uint8Array(n*n).fill(15);
+    const seen=new Uint8Array(n*n), act=[0]; seen[0]=1;
+    while(act.length){
+      const i= r()<0.5 ? act.length-1 : Math.floor(r()*act.length), c=act[i], x=c%n, y=(c/n)|0;
+      const opts=DIRS.filter(([dx,dy])=>{ const nx=x+dx, ny=y+dy; return nx>=0&&ny>=0&&nx<n&&ny<n&&!seen[ny*n+nx]; });
+      if(!opts.length){ act.splice(i,1); continue; }
+      const [dx,dy,b,ob]=opts[Math.floor(r()*opts.length)], nc=(y+dy)*n+(x+dx);
+      walls[c]&=~b; walls[nc]&=~ob; seen[nc]=1; act.push(nc);
+    }
+  }
+  function solution(){ const prev=new Int32Array(n*n).fill(-2); prev[0]=-1; const q=[0];
+    while(q.length){ const c=q.shift(); for(const nb of neighbors(c)) if(prev[nb]===-2){ prev[nb]=c; q.push(nb); } }
+    const route=[]; for(let c=n*n-1;c!==-1;c=prev[c]) route.unshift(c); return route; }
+  function forksOn(route){ return route.slice(0,-1).filter(c=>neighbors(c).length>=3).length; }
+  function generate(){
+    const r=rng(seed);
+    for(let tries=0;tries<50;tries++){ carve(r); if(forksOn(solution())>=lv.forks) return; }
+  }
+  function open(a,b){ const ax=a%n, ay=(a/n)|0, bx=b%n, by=(b/n)|0;
+    for(const [dx,dy,bit] of DIRS) if(ax+dx===bx&&ay+dy===by) return !(walls[a]&bit); return false; }
+  function neighbors(c){ const x=c%n, y=(c/n)|0, out=[];
+    for(const [dx,dy,bit] of DIRS){ const nx=x+dx, ny=y+dy; if(nx>=0&&ny>=0&&nx<n&&ny<n&&!(walls[c]&bit)) out.push(ny*n+nx); } return out; }
+  const finish=()=>n*n-1;
+
+  function persist(){ store.set('mr_maze_'+lv.id,JSON.stringify({seed,path})); }
+  function setLevel(L,fresh){
+    lv=L; n=L.n; cs=(SZ-2*PAD)/n; won=false;
+    lvEl.querySelectorAll('.btn').forEach(b=>b.classList.toggle('on',b.dataset.lv===L.id));
+    let saved=null; if(!fresh){ try{ saved=JSON.parse(store.get('mr_maze_'+L.id)||'null'); }catch(e){} }
+    seed= saved&&Number.isInteger(saved.seed) ? saved.seed : Math.floor(Math.random()*2147483647);
+    generate();
+    path=[0];
+    if(saved&&Array.isArray(saved.path)&&saved.path[0]===0){
+      let ok=true; for(let i=1;i<saved.path.length;i++){ const c=saved.path[i]; if(!Number.isInteger(c)||c<0||c>=n*n||!open(saved.path[i-1],c)||saved.path.indexOf(c)!==i){ ok=false; break; } }
+      if(ok) path=saved.path.slice();
+    }
+    won= path[path.length-1]===finish();
+    store.set('mr_maze_lv',L.id); persist(); draw();
+    msg.className= won ? 'msg good' : 'msg';
+    msg.textContent= won ? 'You did it! Tap New maze for another one. 🌟' : 'Help Matty find the star! Drag him with your finger.';
+  }
+  LEVELS.forEach(L=>{ const b=document.createElement('button'); b.className='btn'; b.dataset.lv=L.id; b.onclick=()=>setLevel(L,false); lvEl.appendChild(b); });
+  function labelLevels(){ lvEl.querySelectorAll('.btn').forEach(b=>{ const L=LEVELS.find(x=>x.id===b.dataset.lv); b.textContent=(done[L.id]?'⭐ ':'')+L.name; });
+    if(Object.keys(done).length) document.getElementById('b-maze').classList.add('show'); }
+  labelLevels();
+  document.getElementById('mnew').onclick=()=>setLevel(lv,true);
+  document.getElementById('mreset').onclick=()=>{ path=[0]; won=false; persist(); draw(); msg.className='msg'; msg.textContent='Back to the start! Drag Matty to the star.'; };
+
+  const cx=c=>PAD+(c%n+0.5)*cs, cy=c=>PAD+(((c/n)|0)+0.5)*cs;
+  function star(x,y,r,fill){ ctx.beginPath(); for(let i=0;i<10;i++){ const a=-Math.PI/2+i*Math.PI/5, rr=i%2?r*0.45:r; ctx.lineTo(x+rr*Math.cos(a),y+rr*Math.sin(a)); } ctx.closePath();
+    ctx.fillStyle=fill; ctx.fill(); ctx.lineWidth=Math.max(3,r*0.12); ctx.strokeStyle='#C98A00'; ctx.lineJoin='round'; ctx.stroke(); }
+  function draw(){
+    if(!walls) return;
+    ctx.fillStyle='#fff'; ctx.fillRect(0,0,SZ,SZ);
+    // start and finish pads
+    ctx.fillStyle='#E7F2F7'; ctx.fillRect(PAD,PAD,cs,cs);
+    ctx.fillStyle='#FFF4CC'; ctx.fillRect(PAD+(n-1)*cs,PAD+(n-1)*cs,cs,cs);
+    star(cx(finish()),cy(finish()),cs*0.36,'#FDD835');
+    // path
+    if(path.length>1){ ctx.strokeStyle='#FB8C00'; ctx.lineWidth=Math.max(10,cs*0.3); ctx.lineCap='round'; ctx.lineJoin='round';
+      ctx.beginPath(); path.forEach((c,i)=>i?ctx.lineTo(cx(c),cy(c)):ctx.moveTo(cx(c),cy(c))); ctx.stroke(); }
+    const at=mattyAt();
+    if(at.x!==cx(path[path.length-1])||at.y!==cy(path[path.length-1])){ // live stretch from the last square to Matty
+      ctx.strokeStyle='#FB8C00'; ctx.lineWidth=Math.max(10,cs*0.3); ctx.lineCap='round'; ctx.beginPath();
+      ctx.moveTo(cx(path[path.length-1]),cy(path[path.length-1])); ctx.lineTo(at.x,at.y); ctx.stroke(); }
+    // walls
+    ctx.strokeStyle='#2D2A32'; ctx.lineWidth=Math.max(8,cs*0.09); ctx.lineCap='round'; ctx.beginPath();
+    for(let c=0;c<n*n;c++){ const x=PAD+(c%n)*cs, y=PAD+((c/n)|0)*cs;
+      if(walls[c]&N_){ ctx.moveTo(x,y); ctx.lineTo(x+cs,y); }
+      if(walls[c]&W_){ ctx.moveTo(x,y); ctx.lineTo(x,y+cs); }
+      if((c%n)===n-1&&walls[c]&E_){ ctx.moveTo(x+cs,y); ctx.lineTo(x+cs,y+cs); }
+      if(((c/n)|0)===n-1&&walls[c]&S_){ ctx.moveTo(x,y+cs); ctx.lineTo(x+cs,y+cs); } }
+    ctx.stroke();
+    // Matty
+    const fs=cs*FACE, img= won ? (face.laugh||face.brave) : face.brave;
+    if(img) ctx.drawImage(img,at.x-fs/2,at.y-fs/2,fs,fs);
+    else { ctx.fillStyle='#E0AC85'; ctx.beginPath(); ctx.arc(at.x,at.y,fs*0.4,0,Math.PI*2); ctx.fill(); }
+  }
+
+  // Smooth Matty: while dragging he follows the pointer, kept inside his square's corridor.
+  // He can slide to the edge of an open side (that is how he enters the next square) but stays
+  // clear of walls, and only leaves the middle along one direction at a time so corners stay clean.
+  const FACE=0.8; let ptr=null;
+  function mattyAt(){
+    const h=path[path.length-1], c={x:cx(h),y:cy(h)};
+    if(!dragging||won||!ptr) return c;
+    const wallHalf=Math.max(8,cs*0.09)/2, lim=Math.max(0,cs/2-cs*FACE*0.42-wallHalf), half=cs/2;
+    const w=walls[h];
+    let dx=Math.max(-((w&W_)?lim:half),Math.min((w&E_)?lim:half,ptr.x-c.x));
+    let dy=Math.max(-((w&N_)?lim:half),Math.min((w&S_)?lim:half,ptr.y-c.y));
+    // round the turn: keep him clear of the corner post, pushing straight out from it (no hops)
+    const R=half-lim;
+    for(const sx of [-1,1]) for(const sy of [-1,1]){ const px=sx*half, py=sy*half, ex=dx-px, ey=dy-py, d=Math.hypot(ex,ey);
+      if(d<R){ if(d<1e-6){ dx=px-sx*R*0.7071; dy=py-sy*R*0.7071; } else { dx=px+ex/d*R; dy=py+ey/d*R; } } }
+    return {x:c.x+dx,y:c.y+dy};
+  }
+
+  function cellAt(p){ const x=Math.floor((p.x-PAD)/cs), y=Math.floor((p.y-PAD)/cs); return (x<0||y<0||x>=n||y>=n) ? -1 : y*n+x; }
+  function moveTo(t,maxD=2){
+    const h=path[path.length-1]; if(t<0||t===h||won) return;
+    const k=path.indexOf(t);
+    if(k>=0){ if(k>=path.length-3){ path.length=k+1; draw(); } return; } // back up along the line (never jump back through a wall)
+    // up to 2 steps through open doorways, so cutting a corner works; a wall still blocks
+    const prev=new Map([[h,-1]]), q=[[h,0]];
+    while(q.length){ const [c,d]=q.shift(); if(c===t) break; if(d>=maxD) continue;
+      for(const nb of neighbors(c)) if(!prev.has(nb)&&path.indexOf(nb)<0){ prev.set(nb,c); q.push([nb,d+1]); } }
+    if(!prev.has(t)) return;
+    const route=[]; for(let c=t;c!==h;c=prev.get(c)) route.unshift(c);
+    path.push(...route); draw();
+    if(t===finish()) win();
+  }
+  function win(){ won=true; dragging=false; done[lv.id]=1; store.set('mr_maze_done',JSON.stringify(done)); labelLevels(); persist(); draw();
+    msg.className='msg good'; msg.textContent='You did it! Matty found the star! 🌟'; burst('🌟'); }
+
+  cv.addEventListener('pointerdown',e=>{ e.preventDefault(); if(won){ msg.className='msg good'; msg.textContent='You already did this one! Tap New maze for another. 🌟'; return; }
+    const c=cellAt(pos(cv,e)), k=path.indexOf(c);
+    if(k<0){ msg.className='msg'; msg.textContent='Put your finger on Matty to start.'; return; }
+    try{ cv.setPointerCapture(e.pointerId); }catch(_){} dragging=true; lastPt=ptr=pos(cv,e); if(k<path.length-1) path.length=k+1; draw();
+    msg.className='msg'; msg.textContent='Keep going! Find the star.'; });
+  let lastPt=null;
+  cv.addEventListener('pointermove',e=>{ if(!dragging||won) return; const p=pos(cv,e);
+    // fill in the gap between finger samples so a fast swipe follows the corridor
+    const steps=Math.max(1,Math.ceil(Math.hypot(p.x-lastPt.x,p.y-lastPt.y)/(cs/4)));
+    for(let i=1;i<=steps&&!won;i++) moveTo(cellAt({x:lastPt.x+(p.x-lastPt.x)*i/steps,y:lastPt.y+(p.y-lastPt.y)*i/steps}));
+    lastPt=ptr=p; if(!won) draw(); });
+  const end=()=>{ if(dragging){ dragging=false; ptr=null; persist(); draw(); } };
+  cv.addEventListener('pointerup',end); cv.addEventListener('pointercancel',end);
+
+  const startLv=LEVELS.find(L=>L.id===store.get('mr_maze_lv'))||LEVELS[0];
+  setLevel(startLv,false);
+  window.__maze={state:()=>({lv:lv.id,n,seed,path:path.slice(),won,done:{...done}}),matty:()=>mattyAt(),cs:()=>cs,walls:()=>Array.from(walls),moveTo,cellCenter:c=>({x:cx(c),y:cy(c)}),setLevel:id=>setLevel(LEVELS.find(L=>L.id===id),false),newMaze:()=>setLevel(lv,true)};
+})();
+
 /* restore last tab */
-(function(){ const t=store.get('mr_tab'); const b=document.querySelector('nav button[data-tab="'+(t==='trace'?'trace':'color')+'"]'); if(b) b.click(); })();
+(function(){ const t=store.get('mr_tab'); const b=document.querySelector('nav button[data-tab="'+(['trace','maze'].includes(t)?t:'color')+'"]'); if(b) b.click(); })();
 </script>
 </body>
 </html>
