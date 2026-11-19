@@ -37,6 +37,7 @@
   .sw{aspect-ratio:1;border-radius:50%;border:3px solid #fff;box-shadow:0 0 0 2px var(--line);cursor:pointer;padding:0;position:relative}
   .sw.on{box-shadow:0 0 0 4px var(--ink);transform:scale(1.08);z-index:1}
   .sw.mix{background:conic-gradient(#E53935,#FDD835,#66BB6A,#4FC3F7,#8E5CC8,#F48FB1,#E53935)}
+  .sw.mix .plus{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font:900 22px 'Nunito';color:#fff;text-shadow:0 0 3px rgba(0,0,0,.55);pointer-events:none}
   .sw.mix input{position:absolute;inset:0;width:100%;height:100%;opacity:0;cursor:pointer;border:0;padding:0}
   .row{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px}
   .btn{font:800 16px 'Nunito',sans-serif;border:3px solid var(--line);background:#fff;color:var(--ink);padding:10px 12px;border-radius:14px;cursor:pointer;flex:1;white-space:nowrap}
@@ -179,10 +180,26 @@ document.querySelectorAll('nav button').forEach(btn=>btn.addEventListener('click
   /* palette */
   COLORS.forEach((c,i)=>{ const b=document.createElement('button'); b.className='sw'+(i===0?' on':''); b.style.background=c; b.setAttribute('aria-label','color '+c);
     b.onclick=()=>pick(c,b); sw.appendChild(b); });
+  // rainbow button: always a rainbow, always opens the picker. Each mixed color gets its own swatch after it.
   const mix=document.createElement('label'); mix.className='sw mix'; mix.title='Mix your own color';
-  mix.innerHTML='<input type="color" value="#7FDBFF" aria-label="Mix your own color">'; sw.appendChild(mix);
+  mix.innerHTML='<span class="plus">+</span><input type="color" value="#7FDBFF" aria-label="Mix your own color">'; sw.appendChild(mix);
   const mixIn=mix.querySelector('input');
-  mixIn.addEventListener('input',()=>{ mix.style.background=mixIn.value; pick(mixIn.value,mix); });
+  const MAX_MIXED=5; let live=null; // the swatch being mixed right now
+  function setSw(b,c){ b.dataset.c=c; b.style.background=c; }
+  function onMix(final){
+    const c=mixIn.value.toLowerCase();
+    if(!live){ live=document.createElement('button'); live.className='sw custom'; live.setAttribute('aria-label','my color');
+      const b=live; b.onclick=()=>pick(b.dataset.c,b); sw.appendChild(b); }
+    setSw(live,c); pick(c,live);
+    if(final){
+      const twin=[...sw.querySelectorAll('.sw.custom')].find(x=>x!==live&&x.dataset.c===c);
+      if(twin){ live.remove(); pick(c,twin); }
+      const all=sw.querySelectorAll('.sw.custom'); if(all.length>MAX_MIXED) all[0].remove();
+      live=null; mixIn.blur();
+    }
+  }
+  mixIn.addEventListener('input',()=>onMix(false));
+  mixIn.addEventListener('change',()=>onMix(true));
   function pick(c,el){ color=c; sw.querySelectorAll('.sw').forEach(x=>x.classList.toggle('on',x===el)); }
 
   /* tools */
